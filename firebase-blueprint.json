@@ -1,0 +1,71 @@
+{
+  "entities": {
+    "users": {
+      "title": "UserProfile",
+      "description": "User profile with statutory mining role and mine assignment",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 256 },
+        "displayName": { "type": "string", "maxLength": 128 },
+        "role": { "type": "string", "enum": ["DGMS_INSPECTOR", "MINE_MANAGER", "SAFETY_OFFICER", "MINING_SIRDAR", "CIL_EXECUTIVE", "ENVIRONMENT_OFFICER"] },
+        "designation": { "type": "string", "maxLength": 128 },
+        "mineAssigned": { "type": "string", "maxLength": 128 },
+        "subsidiary": { "type": "string", "maxLength": 32 },
+        "badgeNumber": { "type": "string", "maxLength": 64 },
+        "lastLoginAt": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "inspections": {
+      "title": "InspectionRecord",
+      "description": "DGMS & Field statutory safety inspection reports",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "mineId": { "type": "string", "maxLength": 64 },
+        "subsidiary": { "type": "string", "maxLength": 32 },
+        "title": { "type": "string", "maxLength": 256 },
+        "inspectorName": { "type": "string", "maxLength": 128 },
+        "severity": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "maxLength": 64 },
+        "location": { "type": "string", "maxLength": 256 },
+        "regClause": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string" },
+        "createdBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["id", "mineId", "title", "severity", "status"]
+    },
+    "emergency_dispatches": {
+      "title": "EmergencyDispatch",
+      "description": "Dispatched emergency alarms, Gmail alerts, and Google Chat notifications",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "channel": { "type": "string", "enum": ["GMAIL", "GOOGLE_CHAT", "SMS_SIREN"] },
+        "target": { "type": "string", "maxLength": 256 },
+        "subject": { "type": "string", "maxLength": 256 },
+        "body": { "type": "string", "maxLength": 4096 },
+        "dispatchedAt": { "type": "string" },
+        "dispatchedBy": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "channel", "subject", "dispatchedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "entities/users" },
+      "description": "User accounts with mine statutory governance roles and assignments"
+    },
+    "/inspections/{inspectionId}": {
+      "schema": { "$ref": "entities/inspections" },
+      "description": "Statutory mine inspections and CAPA audit items"
+    },
+    "/emergency_dispatches/{dispatchId}": {
+      "schema": { "$ref": "entities/emergency_dispatches" },
+      "description": "Log of alerts sent via Gmail and Google Chat"
+    }
+  }
+}

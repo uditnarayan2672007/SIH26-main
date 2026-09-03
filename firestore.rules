@@ -1,0 +1,92 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'rontysodepur@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidInspection(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.mineId is string && data.mineId.size() <= 64 &&
+             data.title is string && data.title.size() <= 256 &&
+             data.severity is string && data.severity.size() <= 64 &&
+             data.status is string && data.status.size() <= 64;
+    }
+
+    function isValidDispatch(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.channel is string && (data.channel == 'GMAIL' || data.channel == 'GOOGLE_CHAT' || data.channel == 'SMS_SIREN') &&
+             data.subject is string && data.subject.size() <= 256 &&
+             data.body is string && data.body.size() <= 4096;
+    }
+
+    function isValidUser(data) {
+      return data.uid is string && data.uid.size() <= 128 &&
+             data.email is string && data.email.size() <= 256 &&
+             data.role is string && (
+               data.role == 'DGMS_INSPECTOR' ||
+               data.role == 'MINE_MANAGER' ||
+               data.role == 'SAFETY_OFFICER' ||
+               data.role == 'MINING_SIRDAR' ||
+               data.role == 'CIL_EXECUTIVE' ||
+               data.role == 'ENVIRONMENT_OFFICER'
+             );
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && (request.auth.uid == userId || isAdmin()) && isValidUser(incoming());
+      allow delete: if isAdmin();
+    }
+
+    // Inspections Collection
+    match /inspections/{inspectionId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(inspectionId) && isValidInspection(incoming());
+      allow update: if isSignedIn() && isValidId(inspectionId) && isValidInspection(incoming()) && (
+        isAdmin() ||
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'severity', 'capaNotes', 'updatedAt'])
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Emergency Dispatches & Alerts Collection
+    match /emergency_dispatches/{dispatchId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(dispatchId) && isValidDispatch(incoming());
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Connection testing endpoint
+    match /test/connection {
+      allow read: if true;
+    }
+  }
+}

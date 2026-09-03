@@ -1,0 +1,6 @@
+{
+  "name": "MineSync - Smart Coal Mine Governance & Compliance System",
+  "description": "AI-enabled central governance, statutory compliance monitoring, real-time field inspections, IoT hazard analytics, and DGMS regulatory oversight for Indian coal mines.",
+  "requestFramePermissions": ["camera", "geolocation", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
