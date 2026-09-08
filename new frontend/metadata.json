@@ -1,0 +1,6 @@
+{
+  "name": "MineSync - National Statutory Coal Portal",
+  "description": "Integrated National Statutory Colliery Safety, Dispatch, and Regulatory Compliance Portal under DGMS and Ministry of Coal (Government of India).",
+  "requestFramePermissions": ["camera", "microphone", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
