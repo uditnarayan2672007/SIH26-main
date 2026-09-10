@@ -40,6 +40,8 @@ export const AIIntelligenceCenter: React.FC<AIIntelligenceCenterProps> = ({
   );
   const [ocrResult, setOcrResult] = useState<any | null>(null);
   const [loadingOCR, setLoadingOCR] = useState(false);
+  const [documentImage, setDocumentImage] = useState<string | null>(null);
+  const [ocrError, setOcrError] = useState<string | null>(null);
 
   const handleRunRiskAudit = async () => {
     setLoadingRisk(true);
@@ -55,6 +57,7 @@ export const AIIntelligenceCenter: React.FC<AIIntelligenceCenterProps> = ({
 
   const handleRunOCRDigitization = async () => {
     setLoadingOCR(true);
+    setOcrError(null);
     try {
       const response = await fetch('/api/ai/ocr-digitize', {
         method: 'POST',
@@ -62,15 +65,30 @@ export const AIIntelligenceCenter: React.FC<AIIntelligenceCenterProps> = ({
         body: JSON.stringify({
           rawText: rawDocumentText,
           documentType: sampleDocType,
+          base64Image: documentImage,
         })
       });
       const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'OCR request failed');
       setOcrResult(data);
     } catch (e) {
       console.error(e);
+      setOcrError(e instanceof Error ? e.message : 'OCR request failed');
     } finally {
       setLoadingOCR(false);
     }
+  };
+
+  const handleDocumentImage = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setOcrError('Please select an image document.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => setDocumentImage(String(reader.result));
+    reader.readAsDataURL(file);
   };
 
   const handleSelectSampleDocument = (type: string) => {
@@ -270,6 +288,14 @@ export const AIIntelligenceCenter: React.FC<AIIntelligenceCenterProps> = ({
               onChange={(e) => setRawDocumentText(e.target.value)}
               className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-xs text-slate-200 font-mono focus:outline-none focus:border-amber-500"
             />
+
+            <label className="flex items-center justify-center gap-2 p-3 rounded-lg border border-dashed border-slate-700 bg-slate-950 text-xs text-slate-300 cursor-pointer hover:border-amber-500">
+              <Upload className="w-4 h-4 text-amber-400" />
+              <span>{documentImage ? 'Scanned image attached' : 'Upload scanned document image'}</span>
+              <input type="file" accept="image/*" onChange={handleDocumentImage} className="hidden" />
+            </label>
+
+            {ocrError && <p className="text-xs text-rose-400">{ocrError}</p>}
 
             <button
               onClick={handleRunOCRDigitization}

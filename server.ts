@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import crypto from 'crypto';
+import fs from 'fs';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
@@ -42,24 +43,106 @@ function getGeminiClient(): GoogleGenAI | null {
   return genAIClient;
 }
 
-// In-memory audit trail state (tamper-evident SHA-256 hash chain)
-let auditLedger = [
-  {
-    blockIndex: 4092,
-    timestamp: new Date().toISOString(),
-    action: 'DGMS Section 22 Stop-Notice Escalation',
-    entityType: 'DGMS_INSPECTION',
-    entityId: 'INSP-2026-0887',
-    initiatedBy: 'Kameshwar Singh, Mining Sirdar',
-    role: 'MINING_SIRDAR',
-    subsidiary: 'ECL',
-    mineName: 'Raniganj Sheetaldaspur Deep Underground Colliery',
-    previousHash: '0000a7b4c919283f6d7e8a91b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1',
-    blockHash: '0000c82f91a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8',
-    digitalSignature: 'SHA256-RSA: 7b9e31ff67b8a1c900e542d... (Verified with DGMS NIC Key ID #9921)',
-    details: 'Methane spike 0.88% recorded by telemetry sensor sensor-ch4-01 with mandatory electrical trip lockout logged.'
+// The ledger is persisted locally for development. Use a durable database or mounted
+// disk in production because Render's default filesystem is ephemeral.
+type AuditBlock = Record<string, any> & {
+  blockIndex: number;
+  previousHash: string;
+  blockHash: string;
+  currentHash: string;
+  digitalSignature: string;
+};
+
+const ledgerPath = process.env.AUDIT_LEDGER_PATH || path.join(process.cwd(), 'data', 'audit-ledger.json');
+const genesisHash = crypto.createHash('sha256').update('MineSync-audit-genesis-v1').digest('hex');
+
+function getSigningKeys() {
+  if (process.env.AUDIT_PRIVATE_KEY && process.env.AUDIT_PUBLIC_KEY) {
+    return {
+      privateKey: crypto.createPrivateKey(process.env.AUDIT_PRIVATE_KEY.replace(/\\n/g, '\n')),
+      publicKey: crypto.createPublicKey(process.env.AUDIT_PUBLIC_KEY.replace(/\\n/g, '\n')),
+    };
   }
-];
+
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('AUDIT_PRIVATE_KEY and AUDIT_PUBLIC_KEY must be configured in production.');
+  }
+
+  console.warn('AUDIT_PRIVATE_KEY/AUDIT_PUBLIC_KEY are not configured; using an ephemeral RSA key for development only.');
+  return crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+}
+
+const signingKeys = getSigningKeys();
+
+function loadAuditLedger(): AuditBlock[] {
+  try {
+    if (fs.existsSync(ledgerPath)) return JSON.parse(fs.readFileSync(ledgerPath, 'utf8')) as AuditBlock[];
+  } catch (error) {
+    console.error('Unable to read audit ledger:', error);
+  }
+  return [{
+    blockIndex: 0,
+    timestamp: new Date().toISOString(),
+    action: 'GENESIS',
+    entityType: 'SYSTEM',
+    entityId: 'MINESYNC',
+    initiatedBy: 'SYSTEM',
+    role: 'SYSTEM',
+    previousHash: '0'.repeat(64),
+    blockHash: genesisHash,
+    currentHash: genesisHash,
+    digitalSignature: '',
+    details: 'Ledger genesis block',
+    payload: {},
+  }];
+}
+
+let auditLedger = loadAuditLedger();
+
+function saveAuditLedger() {
+  fs.mkdirSync(path.dirname(ledgerPath), { recursive: true });
+  const temporaryPath = `${ledgerPath}.tmp`;
+  fs.writeFileSync(temporaryPath, JSON.stringify(auditLedger, null, 2), 'utf8');
+  fs.renameSync(temporaryPath, ledgerPath);
+}
+
+function blockPayload(block: Omit<AuditBlock, 'blockHash' | 'currentHash' | 'digitalSignature'>) {
+  return JSON.stringify({
+    blockIndex: block.blockIndex,
+    timestamp: block.timestamp,
+    action: block.action,
+    entityType: block.entityType,
+    entityId: block.entityId,
+    initiatedBy: block.initiatedBy,
+    role: block.role,
+    subsidiary: block.subsidiary,
+    mineName: block.mineName,
+    previousHash: block.previousHash,
+    details: block.details,
+    payload: block.payload,
+  });
+}
+
+function signHash(hash: string) {
+  return crypto.sign('RSA-SHA256', Buffer.from(hash), signingKeys.privateKey).toString('base64');
+}
+
+function verifyLedger() {
+  const chronological = [...auditLedger].sort((a, b) => a.blockIndex - b.blockIndex);
+  for (let index = 0; index < chronological.length; index += 1) {
+    const block = chronological[index];
+    if (index === 0) {
+      if (block.blockIndex !== 0 || block.blockHash !== genesisHash || block.currentHash !== genesisHash) return false;
+      continue;
+    }
+    if (index > 0 && block.previousHash !== chronological[index - 1].blockHash) return false;
+    const { blockHash, currentHash, digitalSignature, ...unsignedBlock } = block;
+    const expectedHash = crypto.createHash('sha256').update(blockPayload(unsignedBlock)).digest('hex');
+    if (blockHash !== expectedHash || currentHash !== expectedHash) return false;
+    if (!digitalSignature || !crypto.verify('RSA-SHA256', Buffer.from(expectedHash), signingKeys.publicKey, Buffer.from(digitalSignature, 'base64'))) return false;
+  }
+  return true;
+}
 
 // Health API
 app.get('/api/health', (req, res) => {
@@ -177,46 +260,23 @@ app.post('/api/ai/ocr-digitize', async (req, res) => {
     const ai = getGeminiClient();
 
     if (!ai) {
-      // High fidelity deterministic parsing fallback
-      return res.json({
-        documentTitle: documentType || 'Statutory Field Inspection Logbook',
-        extractedMetadata: {
-          inspectionDate: '2026-08-28',
-          mineName: 'Jharia Open Cast Project Block-II',
-          inspectorName: 'Er. R. K. Mahato, Safety Officer',
-          authority: 'DGMS / Colliery Management',
-        },
-        detectedViolations: [
-          {
-            statutoryClause: 'CMR 2017 - Regulation 108 (Haul Road Safety)',
-            observedDefect: 'Haul road lighting below 15 Lux at North dumping turn; berm height found 1.1m (required >2.2m).',
-            riskSeverity: 'HIGH',
-            remedialActionMandate: 'Deploy mobile lighting tower immediately and grade safety berm using dozer D-355.',
-            complianceDeadlineDays: 2
-          },
-          {
-            statutoryClause: 'Mines Rules 1955 - Rule 92 (Personal Protective Equipment)',
-            observedDefect: '2 contractor water sprinkler operators missing dust respirators.',
-            riskSeverity: 'MEDIUM',
-            remedialActionMandate: 'Issue N95 respirators and impose contractor safety fine.',
-            complianceDeadlineDays: 1
-          }
-        ],
-        complianceScoreAssigned: 72,
-        actionItemsForCAPA: [
-          'Grade haul road North shoulder to 2.4m berm height before night shift.',
-          'Verify contractor VTC safety equipment log.'
-        ],
-        cryptographicProofHash: crypto.createHash('sha256').update(rawText || 'MineSyncOCR').digest('hex')
+      return res.status(503).json({
+        error: 'OCR requires GEMINI_API_KEY. Configure the server environment and try again.',
+        code: 'OCR_PROVIDER_NOT_CONFIGURED'
       });
+    }
+
+    if (!rawText && !base64Image) {
+      return res.status(400).json({ error: 'Provide rawText or base64Image to digitize.' });
     }
 
     const contents: any[] = [];
     if (base64Image) {
+      const imageMatch = base64Image.match(/^data:(image\/[a-z0-9.+-]+);base64,/i);
       contents.push({
         inlineData: {
-          mimeType: 'image/jpeg',
-          data: base64Image.replace(/^data:image\/[a-z]+;base64,/, '')
+          mimeType: imageMatch?.[1] || 'image/jpeg',
+          data: base64Image.replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '')
         }
       });
     }
@@ -261,7 +321,8 @@ Output STRICT JSON:
     });
 
     const parsed = JSON.parse(response.text || '{}');
-    parsed.cryptographicProofHash = crypto.createHash('sha256').update(response.text || '').digest('hex');
+    parsed.cryptographicProofHash = crypto.createHash('sha256').update(base64Image || rawText || '').digest('hex');
+    parsed.provider = 'Google Gemini';
     res.json(parsed);
   } catch (error: any) {
     console.error('Error in /api/ai/ocr-digitize:', error);
@@ -375,24 +436,20 @@ Provide comprehensive, authoritative responses with explicit regulatory referenc
 });
 
 // Append to Blockchain-Style Audit Ledger Endpoint
-app.post('/api/audit-trail/append', (req, res) => {
+app.post(['/api/audit-trail', '/api/audit-trail/append'], (req, res) => {
   try {
-    const { action, entityType, entityId, initiatedBy, role, subsidiary, mineName, details } = req.body;
-    
-    const lastBlock = auditLedger[0] || {
-      blockIndex: 4090,
-      blockHash: '0000000000000000000000000000000000000000000000000000000000000000'
-    };
+    const { action, entityType, entityId, initiatedBy, role, subsidiary, mineName, details, payload } = req.body;
+    if (!action || !entityType || !entityId || !initiatedBy) {
+      return res.status(400).json({ error: 'action, entityType, entityId, and initiatedBy are required' });
+    }
 
+    const lastBlock = auditLedger.reduce((latest, block) => block.blockIndex > latest.blockIndex ? block : latest, auditLedger[0]);
     const newIndex = lastBlock.blockIndex + 1;
     const timestamp = new Date().toISOString();
-    const payload = `${newIndex}-${timestamp}-${action}-${entityId}-${initiatedBy}-${lastBlock.blockHash}`;
-    const blockHash = '0000' + crypto.createHash('sha256').update(payload).digest('hex').substring(4);
-    const digitalSignature = `SHA256-RSA: ${crypto.createHash('sha256').update(payload + 'CIL_NIC_ROOT').digest('hex').substring(0, 16)}... (e-Signed by ${initiatedBy})`;
 
-    const newBlock = {
+    const unsignedBlock = {
       blockIndex: newIndex,
-      timestamp: `${new Date().toLocaleDateString('en-GB')} ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} IST`,
+      timestamp,
       action,
       entityType,
       entityId,
@@ -401,12 +458,19 @@ app.post('/api/audit-trail/append', (req, res) => {
       subsidiary: subsidiary || 'CIL_HQ',
       mineName: mineName || 'Central Database',
       previousHash: lastBlock.blockHash,
+      details: details || 'Statutory record verified and added to immutable digital ledger.',
+      payload: payload || {},
+    };
+    const blockHash = crypto.createHash('sha256').update(blockPayload(unsignedBlock)).digest('hex');
+    const newBlock: AuditBlock = {
+      ...unsignedBlock,
       blockHash,
-      digitalSignature,
-      details: details || 'Statutory record verified and added to immutable digital ledger.'
+      currentHash: blockHash,
+      digitalSignature: signHash(blockHash),
     };
 
     auditLedger.unshift(newBlock);
+    saveAuditLedger();
     res.json({ success: true, block: newBlock });
   } catch (error: any) {
     console.error('Error in /api/audit-trail/append:', error);
@@ -416,11 +480,15 @@ app.post('/api/audit-trail/append', (req, res) => {
 
 // Get Audit Trail
 app.get('/api/audit-trail', (req, res) => {
-  res.json(auditLedger);
+  res.json({ blocks: auditLedger, isValid: verifyLedger() });
+});
+
+app.get('/api/audit-trail/verify', (req, res) => {
+  res.json({ isValid: verifyLedger(), blockCount: auditLedger.length });
 });
 
 // Vite Middleware & Static Serving Setup
-async function startServer() {
+export async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -440,4 +508,8 @@ async function startServer() {
   });
 }
 
-startServer();
+if (process.env.VERCEL !== '1') {
+  startServer();
+}
+
+export { app };

@@ -252,7 +252,7 @@ function MineSyncDashboard() {
       const data = await response.json();
       return !!data.isValid;
     } catch (e) {
-      return true;
+      return false;
     }
   };
 
